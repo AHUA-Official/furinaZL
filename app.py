@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# @author       lei.zhang
+# @start        2024-10-13
+# @lastupdate   2024-10-13
 import random
 import time
 from datetime import datetime, timedelta
@@ -6,11 +9,18 @@ import json
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 
+
 from flask import Flask, request, jsonify
 import sqlite3
 import requests
 import monitoropration
+
+
+
 app = Flask(__name__)
+app.config.from_file("config.json", load=json.load)
+with open("config.json", "r", encoding="utf-8") as config_file:
+    app.config.update(json.load(config_file))
 
 
 
@@ -25,6 +35,16 @@ app = Flask(__name__)
 #创建一个monitor的数据库   创建一个monitorinfo的表单
 
 
+# 定义一个全局字典用于存储配置
+global_config = {}
+
+# 初始化时加载 config.json 文件到全局字典
+def load_initial_config():
+    global global_config
+    with open("config.json", "r", encoding="utf-8") as config_file:
+        global_config = json.load(config_file)
+
+load_initial_config()  # 启动时加载配置
 
 #
 @app.route('/')
@@ -38,6 +58,8 @@ def imfine():
 # trigger_fake_temprature     get请求   用于触发向http://127.0.0.1:5001/receiver_tem 发送一些伪造的数据报文
 @app.route('/trigger_fake_temperature', methods=['GET'])
 def trigger_fake_temperature():
+    print(global_config)
+
     #fake_temperatures发出去的时候是是一个json化的列表    utc格式的时间戳对应着当前的温度   温度是2位小数  代表意思是精确到两位小数的摄氏度
     fake_temperatures = []
     for _ in range(10):
@@ -214,6 +236,8 @@ def poll_and_send_data():
 
 # 配置定时任务
 scheduler.add_job(poll_and_send_data, 'interval', minutes=15)
+
+# 随便发啥都返回他的POST报文的receive all 报文 的接口
 @app.route('/receive_all', methods=['POST'])
 def receive_all():
     # 获取请求体中的数据
@@ -232,10 +256,90 @@ def manual_poll_and_send():
         'dbrecord': result
     }), 200
 
-# 随便发啥都返回他的POST报文的receive all 报文 的接口
+# 提供下达config配置的接口  并且需要支持热更新   就是不能重启才生效  要run的时候就生效的那种  就是查看怕config.json文件和修改这个文件 最后返回都是该文件最后的样子
+@app.route('/config', methods=['GET', 'POST'])
+def config_handler():
+    if request.method == 'GET':
+        try:
+            # 每次 GET 请求时，读取并返回 config.json 文件内容
+            with open("config.json", "r", encoding="utf-8") as config_file:
+                global_config = json.load(config_file)
+
+                return jsonify({"message": "配置已成功更新", "config":global_config }), 200
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    elif request.method == 'POST':
+        try:
+            # 获取客户端传入的 JSON 数据
+            new_config = request.json
+            # 读取当前配置文件
+            with open("config.json", "r", encoding="utf-8") as config_file:
+                current_config = json.load(config_file)
+
+            # 更新配置
+            current_config.update(new_config)
+
+            # 保存更新后的配置到 config.json 文件
+            with open("config.json", "w", encoding="utf-8") as config_file:
+                json.dump(current_config, config_file, indent=4, ensure_ascii=False)
+
+            # 更新 app.config 使新配置立即生效
+
+            global_config = json.load(config_file)
+            return jsonify({"message": "配置已成功更新", "config": global_config}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+@app.route('/config_useless', methods=['GET', 'POST'])
+def update_config():
+    global job  # 获取全局调度任务
+
+    if request.method == 'GET':
+        # 过滤掉不能序列化的配置项
+        def filter_config(config):
+            filtered_config = {}
+            for key, value in config.items():
+                try:
+                    # 尝试将配置项序列化为 JSON，如果成功则保留
+                    json.dumps(value)
+                    filtered_config[key] = value
+                except (TypeError, ValueError):
+                    # 如果配置项不能被序列化则跳过
+                    filtered_config[key] = str(value)  # 或者用 str 转换为字符串
+            return filtered_config
+
+        filtered_config = filter_config(app.config)
+        return jsonify(filtered_config), 200
+
+    elif request.method == 'POST':
+        try:
+            # 获取传入的 JSON 数据
+            new_config = request.json
+
+            # 更新调度器间隔
+            if 'SCHEDULER_INTERVAL_MINUTES' in new_config:
+                new_interval = new_config['SCHEDULER_INTERVAL_MINUTES']
+
+                # 更新 app.config
+                app.config['SCHEDULER_INTERVAL_MINUTES'] = new_interval
+
+                # 重新调整调度器的间隔
+                job.reschedule(trigger='interval', minutes=new_interval)
+
+            # 其他配置的热更新
+            if 'MONITOR_URL' in new_config:
+                app.config['MONITOR_URL'] = new_config['MONITOR_URL']
+
+            return jsonify({"message": "配置已成功更新", "config": dict(app.config)}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':
+
+
+    #monitoropration.init_db()
     app.run(host='0.0.0.0', port=5000, debug=True)
 
 
