@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import json
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
+from flask import Flask, jsonify
+import paramiko
 
 
 from flask import Flask, request, jsonify
@@ -45,6 +47,118 @@ def load_initial_config():
         global_config = json.load(config_file)
 
 load_initial_config()  # 启动时加载配置
+
+
+# 服务器信息
+servers = {
+    "main_node": {"hostname": "8.137.104.90", "port": 22, "username": "root", "password": "zilic401689."},
+    "huawei_cloud": {"hostname": "139.9.196.12", "port": 22, "username": "root", "password": "furina1013."},
+    "jd_cloud": {"hostname": "117.72.84.25", "port": 22, "username": "root", "password": "furina@1013"},
+    "tencent_cloud": {"hostname": "49.234.47.133", "port": 22, "username": "root", "password": "furina1013."}
+}
+
+def execute_ssh_command(server, command):
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        ssh.connect(server['hostname'], server['port'], server['username'], server['password'])
+        stdin, stdout, stderr = ssh.exec_command(command)
+        output = stdout.read().decode()
+        error = stderr.read().decode()
+        if error:
+            return {'status': 'error', 'message': error, 'server': server['hostname']}
+        return {'status': 'success', 'output': output, 'server': server['hostname']}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e), 'server': server['hostname']}
+    finally:
+        ssh.close()
+
+@app.route('/scan_cpus', methods=['GET'])
+def scan_cpus():
+    cpu_usage = []
+    command = "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\([0-9.]*\)%* id.*/\1/' | awk '{print 100 - $1}'"
+
+    for name, server in servers.items():
+        result = execute_ssh_command(server, command)
+        if result['status'] == 'success':
+            cpu_usage.append({'server': name, 'cpu_usage': result['output']})
+        else:
+            cpu_usage.append(result)
+
+    print(cpu_usage)  # 打印在控制台
+    return jsonify(cpu_usage)  # 通过Web返回
+@app.route('/scan_disk', methods=['GET'])
+def scan_disk():
+    disk_usage = []
+    command = "df -h | awk 'NR==2{printf \"%s: Used: %.2f%%, Total: %s\\n\", $1, $5, $2}'"
+
+    for name, server in servers.items():
+        result = execute_ssh_command(server, command)
+        if result['status'] == 'success':
+            # 解析输出，假设输出格式为 "/dev/sda1: Used: 76.9%, Total: 50G"
+            disk_info = result['output']
+            disk_usage.append({'server': name, 'disk_usage': disk_info})
+        else:
+            disk_usage.append(result)
+
+    print(disk_usage)  # 打印在控制台
+    return jsonify(disk_usage)  # 通过Web返回
+@app.route('/scan_cpu_info', methods=['GET'])
+def scan_cpu_info():
+    cpu_info = []
+    command = "lscpu"
+
+    for name, server in servers.items():
+        result = execute_ssh_command(server, command)
+        if result['status'] == 'success':
+            cpu_info.append({'server': name, 'cpu_info': result['output']})
+        else:
+            cpu_info.append(result)
+
+    print(cpu_info)  # 打印在控制台
+    return jsonify(cpu_info)  # 通过Web返回
+@app.route('/scan_memory', methods=['GET'])
+def scan_memory():
+    memory_info = []
+    command = "free -m | awk '/Mem:/ {printf \"%s: Used: %s MB, Free: %s MB, Total: %s MB\\n\", $2, $3, $4, $2}'"
+
+    for name, server in servers.items():
+        result = execute_ssh_command(server, command)
+        if result['status'] == 'success':
+            memory_info.append({'server': name, 'memory_info': result['output']})
+        else:
+            memory_info.append(result)
+
+    print(memory_info)  # 打印在控制台
+    return jsonify(memory_info)  # 通过Web返回
+@app.route('/scan_dns', methods=['GET'])
+def scan_dns():
+    dns_info = []
+    command = "cat /etc/resolv.conf"
+
+    for name, server in servers.items():
+        result = execute_ssh_command(server, command)
+        if result['status'] == 'success':
+            dns_info.append({'server': name, 'dns_info': result['output']})
+        else:
+            dns_info.append(result)
+
+    print(dns_info)  # 打印在控制台
+    return jsonify(dns_info)  # 通过Web返回
+@app.route('/scan_ip_route', methods=['GET'])
+def scan_ip_route():
+    ip_route_info = []
+    command = "ip route show"
+
+    for name, server in servers.items():
+        result = execute_ssh_command(server, command)
+        if result['status'] == 'success':
+            ip_route_info.append({'server': name, 'ip_route_info': result['output']})
+        else:
+            ip_route_info.append(result)
+
+    print(ip_route_info)  # 打印在控制台
+    return jsonify(ip_route_info)  # 通过Web返回
 
 #
 @app.route('/')
@@ -274,6 +388,7 @@ def config_handler():
         try:
             # 获取客户端传入的 JSON 数据
             new_config = request.json
+
             # 读取当前配置文件
             with open("config.json", "r", encoding="utf-8") as config_file:
                 current_config = json.load(config_file)
@@ -286,9 +401,13 @@ def config_handler():
                 json.dump(current_config, config_file, indent=4, ensure_ascii=False)
 
             # 更新 app.config 使新配置立即生效
+            app.config.update(current_config)
 
-            global_config = json.load(config_file)
-            return jsonify({"message": "配置已成功更新", "config": global_config}), 200
+            # 重新读取配置文件以获取更新后的配置
+            with open("config.json", "r", encoding="utf-8") as config_file:
+                updated_config = json.load(config_file)
+
+            return jsonify({"message": "配置已成功更新", "config": updated_config}), 200
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 @app.route('/config_useless', methods=['GET', 'POST'])

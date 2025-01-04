@@ -1,9 +1,8 @@
 {
-  "device_uuid": "",
-  "upload_interval": 300,
-  "enable_limit": {
-    "temperature": true,
-    "humidity": true
-  }
-
+    "device_uuid": "AAFSGGSDJHJDSYA",
+    "upload_interval": 30,
+    "enable_limit": {
+        "temperature": true,
+        "humidity": true
+    }
 }
